@@ -1,0 +1,206 @@
+define([ "dojo/_base/declare", "dojo/dom", "dojo/dom-class", "dojo/promise/all", "dojo/_base/array",
+		"dojo/dom-construct", "dojo/dom-style", "dojo/_base/lang", "dojo/on",
+		"calpoly/data-util",
+		"dijit/Dialog" ],
+
+function(declare, dom, domClass, all, array,
+		domConstruct, domStyle, lang, on,
+		calpolyData,
+		Dialog) {
+	
+
+	/**
+	 * Sort function to sort numbers in reverse order.
+	 */
+	function reverseSort(a, b){
+		return b-a;
+	}
+	
+	/**
+	 * Sort terms by term code
+	 */
+	function termSort(a, b){
+		return a.term.termCode - b.term.termCode;
+	}
+
+	/**
+	 * Add any Terms to yearGroup for Moodle courses who's term is not
+	 * already represented in yearGroup.
+	 * Need to mimic term.termSeason, term.termCode
+	 * @returns if terms were added
+	 */
+	function addMissingMoodleTerms(moodleData, yearGroup, keys){
+		var moodleMap = moodleData.map;
+		var additions = false;
+		for(var classLabel in moodleMap){
+			var moodle = moodleMap[classLabel];
+			if(moodle.termCode!=null){
+				var moodleTerm = calpolyData.convertTermCode(moodle.termCode);
+				var acYear = moodleTerm.year;
+				// Fall is part of next academic year, e.g. Fall 2003 is 2004 Academic Year
+				if(moodleTerm.quarter=='Fall'){
+					acYear += 1;
+				}
+				console.debug(moodleTerm);
+
+				if(!yearGroup[acYear]){
+					// No terms for this year at all, add the row
+					yearGroup[acYear] = [];
+					keys.push(acYear);
+				}
+				// If yearGroup does not have this moodle course's termCode
+				if(!array.some(yearGroup[acYear], function(item){
+					return item.term.termCode == moodle.termCode;
+				})){
+					yearGroup[acYear].push({term:{termSeason:moodleTerm.quarter+' (PolyLearn)', termCode:moodle.termCode}});
+					additions = true;
+				}
+
+			}
+		}
+		return additions;
+	}
+	
+	/**
+	 * View for a Class
+	 * TODO Should the detail view be separate from the
+	 * collapsed?
+	 */
+	var PastTerms = declare([ Dialog ], {
+		
+		title:"View another Quarter",
+		
+		/**
+		 * @memberOf PastTerms
+		 */
+		postCreate:function(){
+			this.inherited(arguments);
+			var self = this;
+			var portlet = this.portlet;
+			// Add portlet CSS class so styles apply
+			domClass.add(this.containerNode, 'up-portlet-content-wrapper-inner');
+			/*
+			 * Need to add terms for Moodle courses associated with a term so
+			 * that the user can find the Moodle course.
+			 */
+			var enrollmentRequest = portlet.request(portlet.createResourceURL(null, "getEnrollment"), {handleAs:"json"});
+			all([enrollmentRequest, portlet.moodleRequest])
+			     .then(lang.hitch(self, 'handleEnrollment'), function(){
+			    	 console.debug('Failed to load enrollment history & Moodle data',arguments);
+			    	 // Try enrollment history alone.
+			    	 enrollmentRequest.then(function(data){
+			    		 console.debug('Calling handleEnrollment with enrollment data only');
+			    		 self.handleEnrollment([data, null]);
+			    	 });
+			     });
+			
+			this.set('content', this.loadingMessage);
+		},
+		
+		/**
+		 * Retrieved enrollment history
+		 * @param data
+		 */
+		handleEnrollment:function(results){
+			console.debug('handleEnrollment', arguments);
+			try{
+			var data = results[0];
+			var moodleData = results[1];
+        	var div = domConstruct.create('div');
+        	
+        	domConstruct.create('p', {innerHTML:"For detailed enrollment history, see <a href=\"https://dashboards.calpoly.edu/dw/polydata/student_poly_profile_self_svc.display\">Poly Profile.</a>"
+        		+"<div><em>(#) is the number of units attempted</em></div>"}, div);	
+        	
+        	var items = data.items;
+        	if(items.length==0){
+        		// TODO Message
+        		domConstruct.create('div', {innerHTML:"You are not enrolled in other quarters."});
+        	}
+        	else{
+        		// GroupBy Academic year, map to [term]
+        		var yearGroup = {};
+        		var keys = []; // JavaScript has no easy way to get dictionary keys :(
+        		for ( var i = 0; i < items.length; i++) {
+        			var item = items[i];
+        			/*
+        			 * TODO Determine policy for what past quarters to display.
+        			 * UP-1260
+        			 * Not all users have termGrade object. (instructors?)
+        			 */
+//    				if(item.termGrade.unitsAttempted==0){
+    					/*
+    					 * Skip terms without any classes
+    					 * However, this may omit terms where the user enrolled then dropped.
+    					 * TODO policy?
+    					 */
+//    					continue;
+//    				}
+    				var term = item.term;
+    				var year = parseInt(term.termAcademicYear, 10);
+    				var terms = yearGroup[year];
+    				if(!terms){
+    					terms = [];
+    					yearGroup[year] = terms;
+    					keys.push(year);
+    				}
+    				terms.push(item);
+    			}
+        		
+        		if(moodleData){
+        			try{
+        				if(addMissingMoodleTerms(moodleData, yearGroup, keys)){
+        					// Additions made, add message
+        					domConstruct.create('div',{innerHTML:"<strong>(PolyLearn)</strong> indicates terms you were not enrolled in, but have a PolyLearn course for."}, div);
+        				}
+        			}
+        			catch(err){
+        				console.error(err);
+        			}
+        		}
+
+        		keys.sort(reverseSort);
+
+        		for ( var i = 0; i < keys.length; i++) {
+					var year = keys[i];
+					domConstruct.create('h3', {innerHTML:(year-1)+" - "+year}, div);
+					// term item
+					var terms = yearGroup[year];
+					terms.sort(termSort);
+					for ( var j = 0; j < terms.length; j++) {
+						var item = terms[j];
+						var term = item.term;
+						var text = term.termSeason;
+						
+						// Show units attempted if available
+						var tg = item.termGrade;
+						if(tg){
+							var ua = tg.unitsAttempted;
+							if(typeof ua == 'number' && ua>0){
+								text += ' ('+ua+')';
+							}
+						}
+						var a = domConstruct.create('a', {innerHTML:text, href:"javascript:;"}, div);
+		    			on(a, 'click', lang.hitch(this, 'onTermSelect', term.termCode));	
+					}
+					
+				}
+        	}
+        	
+			this.set('content', div);
+			// set content is not triggering resizing correctly. Issue in Dojo 1.8, TODO Report Dojo bug?
+			this._size();
+			this._position();
+			}
+			catch(err){
+				console.error(err);
+			}
+        },
+        
+        onTermSelect:function(termCode){
+        	console.debug('onTermSelect', termCode);
+        }
+		
+	});
+	return PastTerms;
+});
+	

@@ -1,0 +1,996 @@
+define(["dojo/_base/declare", "calpoly/_PortletMixin", "calpoly/_PortletImpersonateMixin",
+        "dojo/dom", "dojo/dom-construct", "dojo/dom-style", "dojo/dom-class", "dojo/dom-geometry", "dojo/dom-prop",
+        "dojo/_base/lang", "dojo/on", "dojo/topic","dojo/aspect","dojo/_base/array",
+        "dojo/Deferred", "dojo/promise/all",
+        "dojo/date","dojo/date/locale",
+        "dojo/store/Memory", "dojo/store/Observable",
+        
+        "dijit/_WidgetBase",
+        
+        "dijit/layout/ContentPane","dijit/layout/BorderContainer", "dijit/layout/TabContainer",
+        "dijit/form/DropDownButton", "dijit/TooltipDialog", "dijit/Dialog",
+        "dojo/_base/fx",
+        
+        "./ClassView", "./MyClassesCalendar", "./ClassListView", "./PastTerms", "./StudySessionRequest", "./util",
+        "dojo/_base/config", "calpoly/portal-html"],
+         
+        /*
+         * Ideas:
+         * Calendar Today on right, expand to slide down list.
+         * Calendar in tab or dialog?
+         * Books?
+         */
+function(declare, _PortletMixin, _PortletImpersonateMixin,
+        dom, domConstruct, domStyle, domClass, domGeometry, domProp,
+        lang, on, topic, aspect, array,
+        Deferred, all,
+        date,dateLocale,
+        MemoryStore, Observable,
+        
+        _WidgetBase,
+        
+        ContentPane, BorderContainer, TabContainer,
+        DropDownButton, TooltipDialog, Dialog,
+        baseFx,
+         
+        ClassView, MyClassesCalendar, ClassListView, PastTerms, StudySessionRequest, coursesUtil,
+        dojoConfig, portalHtml){
+     
+	var PORTAL_ICONS=dojoConfig.portal.iconsPath;
+	var POLYLEARN_ICON = PORTAL_ICONS+'polylearn.png';
+	var POLYLEARN_HOME_URL='https://polylearn.calpoly.edu/login/index.php';
+	var POLYLEARN_HOME_MAINTENANCE_URL='http://polylearnsupport.calpoly.edu/Support/ScheduledMaintenance.html#current';
+	
+	/**
+	 * Render PolyLearn link HTML
+	 */
+	function polyLearnLink(moodle, div){
+		var args = {href:moodle.url, target:"_blank", "class":"polyLearn"};
+		if(moodle.active===false){
+			args["class"]+=" polyLearnInactive";
+			args.title="PolyLearn inactive";
+		}
+		portalHtml.iconText('a', args, {src:POLYLEARN_ICON, alt:"PolyLearn"}, moodle.name, div);
+	}
+	
+	var CLASS_TIME_FORMAT = {locale: "en-us",formatLength: "short",selector: "time"};
+	
+	// Flags correspond with Date.getDay() - Sunday=0
+	var meetingDayFlags = ["sundayFlag","mondayFlag","tuesdayFlag","wednesdayFlag","thursdayFlag","fridayFlag","saturdayFlag"];
+	
+	var meetingDayFlagMap = {"sundayFlag":"U","mondayFlag":"M","tuesdayFlag":"T","wednesdayFlag":"W","thursdayFlag":"R","fridayFlag":"F","saturdayFlag":"S"};
+	
+	/*
+	 * TODO CalPoly tuesday/monday schedule exception
+	 * 
+	 * For now, no point in month view, we're not prepared to do holidays, etc.
+	 * A month view would imply that to the user, so it's disabled by using a template without those buttons.
+	 */
+	/**
+	 * Processes a list of classes into Weekly Events for the calendar.
+	 * Returns an object with statistics needed to render the calendar. 
+	 */
+	function processClassesForCalendar(classes){
+		var weeklyEvents = [];
+
+		// Initial conditions outside limits
+		var earliestHour = 25;
+		var latestHour = -1;
+		var noSunday = true;
+		var noSaturday = true;
+		
+		for(var cIndex=0; cIndex<classes.length;cIndex++){
+			var c = classes[cIndex];
+			
+			// Note: Date.getDay() starts with index 0, Sunday
+			var meets = c.meetingPatterns;
+			// For each MeetingPattern of each enrolled class
+			for ( var i = 0; i < meets.length; i++) {
+				/*
+				 * startTime and endTime can be null when meetingFlag is 'Y'
+				 * Catch exception and continue loop.
+				 */
+				try{
+				var mp = meets[i];
+				var text = coursesUtil.courseLabel(c);
+				var bdText = coursesUtil.meetingLocationText(mp);
+				if(bdText){
+					text += '<div class="location">'+bdText+'</div>';
+				}
+				if(c.instructor){
+					text+='<div>'+c.instructor.name+'</div>';
+				}
+				
+				var x = {
+					summary: text,
+					componentCode: c.componentCode,
+					startTime:dateLocale.parse(mp.startTime, CLASS_TIME_FORMAT),
+					endTime:dateLocale.parse(mp.endTime, CLASS_TIME_FORMAT)
+				};
+				
+				// Update earliestHour if this event is earliest we've seen
+				if(x.startTime.getHours() < earliestHour){
+					earliestHour = x.startTime.getHours();
+				}
+				
+				var endHour = x.endTime.getHours();
+				if(x.endTime.getMinutes()!=0){
+					// If endTime has minutes component calendar should range to the next hour
+					endHour++;
+				}
+				if(endHour > latestHour){
+					latestHour = endHour;
+				}
+				
+				// Or array and .join('')?
+				var days = '';
+				
+				// For each day of the week
+				for ( var j = 0; j < meetingDayFlags.length; j++) {
+					var flag = meetingDayFlags[j];
+					if(mp[flag] == 'Y'){
+						// The current MeetingPattern for the class meets on this day
+						var dayChar = meetingDayFlagMap[flag];
+						days+=dayChar;
+						if(dayChar=='U'){
+							noSunday = false;
+						}
+						if(dayChar=='S'){
+							noSaturday = false;
+						}
+					}
+				}
+				x.days = days;
+				weeklyEvents.push(x);
+				}
+				catch(err){
+					console.warn('Error processing meetingPattern', c);
+					console.warn(err); 
+				}
+	
+			} // End meeting-pattern
+		} // End individual class
+		
+		return{
+			weeklyEvents:weeklyEvents,
+			earliestHour:earliestHour,
+			latestHour:latestHour,
+			noSunday:noSunday,
+			noSaturday:noSaturday
+		};
+	}
+
+	
+	/**
+	 * BorderContainer is only displayed when Term has classes.
+	 */
+    var Portlet = declare([_WidgetBase, _PortletMixin, _PortletImpersonateMixin], {
+    	
+    	/*
+    	 * Minimum BorderContainer height (px)
+    	 * CalendarWidget will set the minHeight.
+    	 * ClassList will adjust containerHeight.
+    	 */
+    	minHeight: 200,
+    	containerHeight: 200,
+    	
+    	// Show selector?
+    	containerViewSelect:false,
+    	
+    	// Switch between bc and tabs at this width
+    	transitionWidth: 1000,
+    	
+    	termCode:"current",
+    	// bc, tabs, blank = auto-select
+    	containerView:"",
+    	
+    	// private
+    	// visibility determined automatically
+    	containerVisible:false,
+    	
+    	studySessionEnrollmentRequest:null,
+         
+    	/**
+    	 * Render the header.
+    	 * BorderContainer will be created if there are terms.
+    	 * @memberOf Portlet
+    	 */
+        buildRendering:function(){
+        	console.debug('MyClasses.buildRendering');
+        	var self = this;
+        	
+        	// Initialize
+        	this.checkImpersonate();
+        	
+        	// Resolved after the current term request completes.
+        	this.currentTermResponded = new Deferred();
+        	
+            // Called after base class/mixins constructor methods.
+            var node = this.getContentNode();
+            this.domNode = node;
+            // Just applies baseClass
+            this.inherited(arguments);
+        	var node = this.domNode;
+        	
+        	if(this.containerView == ""){
+        		var box = domGeometry.getMarginBox(node);
+        		this.autoContainerView(box.w);
+        	}
+            
+            this.removeContentPadding();
+            
+            var header = domConstruct.create('div', {"class":"header"}, node);
+            this.headerNode = header;
+
+            this.termTitleNode = domConstruct.create('h3', null, header);
+            
+            var b = domConstruct.create('button',{type:"button", innerHTML:"View Other Quarters"}, header);
+            on(b, 'click', lang.hitch(this, 'onViewTerm'));
+            
+            if(this.containerViewSelect){
+            	this.viewSelect = new Select({
+            		value:self.containerView,
+            		onChange:function(val){
+            			self.set('containerView', val);
+            		},
+            		style:"float:right;",
+            		options:[
+            		         {label:"Side-by-Side", value:"bc"},
+            		         {label:"Tabs", value:"tabs"}
+            		         ]
+            	}).placeAt(header);
+            }
+            
+            this.messageNode = domConstruct.create('div', {style:"display:none;","class":"portlet-msg-info"}, node);
+            
+            this.termContainerNode = domConstruct.create('div', null, node);
+            
+            this.unenrolledMoodleNode = domConstruct.create('div', {"class":"unenrolledMoodle"}, node);
+        },
+        
+        postCreate:function(){
+            /*
+        	 * Widget doesn't automatically resize due to the way margin-left changes.
+        	 * So resize based on topic. (Published by Single Click sidebar)
+        	 */
+            this.own(topic.subscribe("portal/columns-resized", lang.hitch(this, 'onPortalColumnsResized')));
+        },
+        
+        /*
+         * termContainer lifecycle:
+         * Created if the term has classes via set('containerVisible', true)
+         * BorderContainer or TabContainer based on containerView
+         * Child widgets get swapped in and out if containerView changes. (_classListWidget, _calendarWidget)
+         * containerVisible shows/hides, first show creates.
+         */
+        
+        // TODO what if change containerView while hidden?
+        
+        /**
+         * Show/hide the termContainer.
+         * Creates container if not already created.
+         * @param visible
+         */
+        _setContainerVisibleAttr:function(visible){
+        	if(this.termContainer){
+        		// show-hide existing
+        		domStyle.set(this.termContainer.domNode, 'display', visible?'block':'none');
+        	}
+        	else if(visible){
+        		// Create
+        		this._setupContainer();
+        	}
+        	this._set('containerVisible', visible);
+        },
+        
+
+        /**
+         * Specifies what kind of termContainer to use.
+         * Does not create container if not visible, instead deletes this.termContainer so that it is created
+         * when containerVisible changes.
+         * @param view "bc", "tabs"
+         */
+        _setContainerViewAttr:function(view){
+        	if(view == this.containerView){
+        		// No change
+            	console.debug('_setContainerViewAttr (no change, ignored)', view);
+        		return;
+        	}
+        	console.debug('_setContainerViewAttr', view);
+        	/*
+        	 * containerView needs to be updated before calling _setupContainer
+        	 * TODO Should _set always be called first?
+        	 */
+        	this._set('containerView', view);
+        	var cont = this.termContainer;
+        	if(cont){
+    			/*
+    			 * Remove widgets from their parent so we can swap them to the new container later.
+    			 * Done this way so that removed from Expando
+    			 */
+        		var listWidget = this._classListWidget;
+        		var calWidget = this._calendarWidget;
+    			listWidget.getParent().removeChild(listWidget);
+    			calWidget.getParent().removeChild(calWidget);
+    			
+    			/*
+    			 * Need to remove classes that TabContainer added, otherwise messes up our BorderContainer CSS
+    			 * Remove all classes added by containers to be consistent
+    			 */
+    			domClass.remove(listWidget.domNode);
+    			domClass.remove(calWidget.domNode);
+    			
+    			// Restore baseClass
+    			domClass.add(listWidget.domNode, listWidget.baseClass);
+    			domClass.add(calWidget.domNode, calWidget.baseClass);
+    			
+    			cont.destroyRecursive();
+    			console.debug('Removed child widgets and destroyed container');
+    			delete this.termContainer;
+    		}
+        	if(this.containerVisible){
+        		this._setupContainer(view);	
+        	}
+        	if(this.viewSelect){
+        		this.viewSelect.set('value', view);	
+        	}
+        },
+        
+        /**
+         * Creates term container for the supplied containerView.
+         * Adds widgets to the container.
+         * Preconditions:
+         *  - this.termContainer must not exist.
+         *  - Should not already be visible
+         *  - Child widgets must be created (_classListWidget, _calendarWidget)
+         *  
+         * Assigns this.termContainer
+         * @param containerView (Optional) Override containerView to setup.
+         */
+        _setupContainer:function(containerView){
+        	var view = containerView || this.containerView;
+        	if(this.termContainer){
+        		throw new Error('this.termContainer already created!');
+        	}
+        	var self = this;
+        	var cont = null;
+        	if(view=='bc'){
+        		// FIXME How to do initial height? New BorderContainer auto height?
+        		console.debug('Creating BorderContainer');
+        		cont = new BorderContainer({
+        			style:{
+        				width:"100%",
+        				height:self.get('containerHeight')+"px",
+        			},
+        			gutters:false,
+        			liveSplitters:false
+        		});
+        		domStyle.set(this._calendarWidget.domNode, 'width', '50%');
+        	}
+        	else if(view=='tabs'){
+        		console.debug('Creating TabContainer');
+        		cont = new TabContainer({
+        			style:"width:100%;",
+        			// Change height with selected child
+        			doLayout:false
+        		});
+        		// BorderContainer modifies style width, so reset to 100% to fill tab width
+        		domStyle.set(this._classListWidget.domNode, 'width', '100%');
+        		domStyle.set(this._calendarWidget.domNode, 'width', '100%');
+        		// Something is setting to position static, which causes Calendar toolbar to layout wrong
+        		domStyle.set(this._calendarWidget.domNode, 'position', 'relative');
+        	}
+        	else{
+        		throw new Error('Unknown containerView: '+view);
+        	}
+        	
+        	cont.addChild(this._classListWidget);
+    		cont.addChild(this._calendarWidget);
+        	cont.placeAt(this.termContainerNode);
+
+    		aspect.after(cont, 'resize', lang.hitch(self, 'onContainerResize'));
+    		this.termContainer = cont;
+    		/*
+    		 * Was thinking about caching the UI for each term, so that
+    		 * switching back to current term would be quicker and wouldn't have to remerge Moodle data.
+    		 * However, everything about this code as been designed to destroy
+    		 * and recreate, so this is too big a refactor now.
+    		 */
+    		this._updateHeight();
+        },
+        
+        /**
+         * Bind termTitle so it sets the Title Node.
+         */
+        _setTermTitleAttr:{node:"termTitleNode", type:"innerHTML"},
+        
+        /**
+         * Set the displayed termCode.
+         * "current" for current term.
+         * @param termCode
+         */
+        _setTermCodeAttr:function(termCode){
+        	var self = this;
+        	console.debug("_setTermCodeAttr", termCode);
+        	/*
+        	 * This is called after buildRendering(), so there's no race condition.
+        	 */
+        	
+        	if(this.moodleMergePromise){
+        		console.debug("Canceling moodleMergePromise, terms changed before Moodle response");
+        		this.moodleMergePromise.cancel('termCode changed');
+        		delete this.moodleMergePromise;
+        	}
+        	domConstruct.empty(this.unenrolledMoodleNode);
+        	
+        	if(self._currentTermCode && self._currentTermCode==termCode){
+        		// Set to current so that moodleMerge logic works
+        		console.debug('termCode is current', termCode);
+        		termCode = 'current';
+        	}
+        	this.termCode = termCode;
+        	
+            // Reset state
+        	this.set('termTitle', '');
+        	this.set('message', null);
+        	this.minHeight = 200;
+        	this.containerHeight = 200;
+        	if(this.termContainer){
+        		// destroys widgets that are still childern at this point
+        		this.termContainer.destroyRecursive();
+            	delete this.termContainer;
+            	delete this._classListWidget;
+            	delete this._calendarWidget;
+        	}
+        	if(this._studySessionButton){
+        		// Button DOMNode
+        		domConstruct.destroy(this._studySessionButton);
+        		delete this._studySessionButton;
+        		this.resetStudySession();
+        	}
+        	
+        	var handleEnrollment = lang.hitch(this, 'handleEnrollment');
+        	var handleEnrollmentError = lang.hitch(this, 'handleEnrollmentError');
+        	if(termCode=='current'){
+        		this.showReturnCurrentButton(false);
+        		if(self._currentTermData){
+        			self.handleEnrollment(self._currentTermData);
+        		}
+        		else{
+        			// First time getting current enrollment
+        			var currentEnrollmentDef = this.request(this.createResourceURL(null, "getCurrentEnrollment"), {handleAs:"json"});
+        			currentEnrollmentDef.then(function(data){
+        				self._currentTermData = data;
+        				self._currentTermCode = data.term.termCode;
+        				self.currentTermResponded.resolve(data);
+        			});
+        			currentEnrollmentDef.then(handleEnrollment, handleEnrollmentError);
+        		}
+        	}
+        	else{
+        		this.showReturnCurrentButton(true);
+        		this.request(this.createResourceURL({termCode:termCode}, "getTermEnrollment"), {handleAs:"json"})
+        			.then(handleEnrollment, handleEnrollmentError);
+        	}
+
+        	this._set('termCode', termCode);
+        },
+        
+        showReturnCurrentButton:function(show){
+        	var self = this;
+        	if(show){
+        		// Already created
+        		if(self.returnCurrentButton){
+        			return;
+        		}
+        		// Place in 2nd position after title
+                var b = domConstruct.create('button',{type:"button", 
+                	innerHTML:"Return to "+self._currentTermData.term.termDescription}, self.headerNode, 1);
+                on(b, 'click',function(){
+        			self.set('termCode', 'current');
+                });
+                self.returnCurrentButton = b;
+        	}
+        	else if(self.returnCurrentButton){
+        		domConstruct.destroy(self.returnCurrentButton);
+        		delete self.returnCurrentButton;
+        	}
+        },
+        
+        _setMessageAttr:function(msg){
+        	if(msg){
+        		domStyle.set(this.messageNode, 'display', 'block');
+        		this.messageNode.innerHTML = msg;
+        	}
+        	else{
+        		domStyle.set(this.messageNode, 'display', 'none');
+        	}
+        	this._set('message', msg);
+        },
+        
+        /**
+         * Set the height of the termContainer, only used by containers that cannot calculate height.
+         * Limited to minHeight
+         * @param height
+         */
+        _setContainerHeightAttr:function(height){
+        	console.debug('_setContainerHeightAttr', height);
+        	
+        	if(height<this.minHeight){
+        		height = this.minHeight;
+        	}
+        	this._set('containerHeight', height);
+        	this._updateHeight();
+        },
+        
+        /**
+         * Set the minimum height for the container.
+         * If exceeds containerHeight, containHeight is increased.
+         * (MyClassesCalendar calls this)
+         * @param minHeight
+         */
+        _setMinHeightAttr:function(minHeight){
+        	// _setContainerHeightAttr checks this, so set before calling _set
+        	this.minHeight = minHeight;
+        	if(minHeight>this.containerHeight){
+        		this.set('containerHeight', minHeight);
+        	}
+        	this._set('minHeight', minHeight);
+        },
+        
+        /**
+         * Update heights of widgets based on containerHeight
+         */
+        _updateHeight:function(){
+        	var cv = this.containerView;
+        	if(cv=='bc' && this.termContainer){
+        		var height = this.get('containerHeight');
+        		console.debug('Resizing BorderContainer height', height);
+        		this.termContainer.resize({h:height});
+        		domStyle.set(this._calendarWidget.domNode, 'height', '100%');
+        	}
+        	/*
+    		 * Calendar needs height specified when in tabs mode.
+    		 * Dojo 1.9 added resize, but it doesn't seem to work. Looking
+    		 * at code, I don't see resize being implemented, so keep continue
+    		 * modifying domNode directly.
+    		 * Reported Dojo bug #17523
+    		 */
+        	else if(cv=='tabs' && this._calendarWidget){
+        		// Calendar sets the minHeight to height of content
+        		var height = this.get('minHeight');
+        		console.debug('Setting Calendar Widget height', height);
+        		domStyle.set(this._calendarWidget.domNode, 'height', height+'px');
+        	}
+        },
+        
+        /**
+         * Renders a new ClassListView and MyClassesCalendar for the term.
+         * @param data Term Data returned by web services.
+         */
+        handleEnrollment:function(data){
+        	console.debug('handleEnrollment', data);
+        	var self = this;
+        	self._enrollmentData = data;
+        	try{
+        		var items = data.items;
+        		this.set('termTitle', data.term.termDescription);
+        		if(items.length == 0){
+        			if(data.resultCode=="not_available"){
+        				// First-time freshman schedule not ready yet
+        				// TODO MCPLT-18: Get schedule ready data from webservices or via Controller
+        				
+        				this.set('message', "<strong>Your class schedule is currently being generated</strong><div>Please check back on <strong>August 7</strong> when your schedule will be finalized.</div>");
+        			}
+        			else{
+        				this.set('message', "You have no classes this term.");
+        			}
+        			this.set('containerVisible', false);
+        		}
+        		else{
+        			// Have classes
+        			console.debug(items.length+ ' items');
+
+        			var store = new MemoryStore({data:items, idProperty:"classLabel"});
+        			self._classesStore = store;
+        			
+        			if(data.term.termCode == self.studySessionTermCode){
+        				// Study Session is currently open
+        				var topics = this.getStudySessionClasses(store);
+        				// An existing request must refer to valid topics due to database constraints
+        				if(topics.length>0){
+        					console.debug('Creating StudySessionRequest button, matchingTopics=', topics);
+            	            var ssLink = domConstruct.create('button', {type:"button"});
+            	            on(ssLink, 'click', lang.hitch(self,'showStudySessionRequest'));
+            	            self._studySessionButton = ssLink;
+            	            self.updateStudySessionButton();
+            	            domConstruct.place(ssLink, self.headerNode);
+        				}
+        			}
+
+        			this._classListWidget = new ClassListView({
+        				portlet:self, 
+        				store:store,
+        				title:"Class List",
+        				region:"center"
+        			});
+        			
+        			/*
+        			 * Avoid possible Async/race-conditions with store
+        			 * and loading in _createDefaultViews
+        			 */
+        			all([store.query(self.enrolledFilter), store.query(self.instructorFilter)])
+        				.then(function(results){
+        					try{
+        					console.group("Calendar setup");
+        					// Concat two query results together into single array
+        					var data = processClassesForCalendar(results[0].concat(results[1]));
+        					
+        					var props = {
+                    				portlet:self,
+                    				title:"Calendar",
+                    				region:"trailing",
+                    				splitter:true,
+                    				noSunday:data.noSunday,
+                    				noSaturday:data.noSaturday
+                    			};
+        					
+        					// Only set valid min/max hours
+        					if(data.earliestHour!=25){
+        						props.minHours = data.earliestHour;
+        					}
+        					if(data.latestHour!=-1){
+        						props.maxHours = data.latestHour;
+        					}
+        					
+        					var cal = new MyClassesCalendar(props);
+        					// Make Observable?
+        					var store = new MemoryStore();
+        					cal.addWeeklyEvents(store, data.weeklyEvents);
+        					cal.set('store', store);
+        					self._calendarWidget = cal;
+        					console.debug('Calendar created', cal);
+        					console.groupEnd("Calendar setup");
+        					
+                			// Dimensions set in _setupContainer
+        					self.set('containerVisible', true);
+        					}
+        					catch(err){
+        						console.error(err);
+        					}
+        				});
+
+        		}
+
+                this._moodleRequestStart = new Date().getTime();
+
+        		// 'misc' is required for each request becuase there are special courses that do not have an associated term
+                var moodleRequest = this.request(this.createResourceURL(null, "moodleLinks"), {handleAs:"json", query: { terms: [data.term.termCode, "misc"].join(',')}});
+                moodleRequest.then(lang.hitch(this, 'handleMoodle'), lang.hitch(this, 'handleMoodleError'));
+
+                this.moodleMergePromise = moodleRequest.then(lang.hitch(this, 'mergeMoodle'));
+            }
+        	catch(err){
+        		console.error('handleEnrollment exception!');
+        		console.error(err);
+        	}
+        },
+        
+        showStudySessionRequest:function(){
+        	var self = this;
+        	var d = self._studySessionDialog;
+        	if(d){
+        		d.show();
+        		return;
+        	}
+        	
+			var topics = this.getStudySessionClasses(self._classesStore);
+        	var req = new StudySessionRequest({topics:topics, existingRequest:self.studySessionEnrollmentRequest, portlet:self});
+			d = new Dialog({title:"Request Study Sessions", content:req});
+			req.on('close', function(){
+				d.hide();
+			});
+			d.show();
+			self._studySessionDialog = d;
+        },
+        
+        /**
+         * Reset the StudySession request dialog and update button label.
+         */
+        resetStudySession:function(){
+        	console.debug('resetStudySession');
+			// Destroy
+        	if(this._studySessionDialog){
+        		this._studySessionDialog.destroyRecursive();
+    			delete this._studySessionDialog;	
+        	}
+			this.updateStudySessionButton();	
+        },
+        
+        /**
+         * Update button label based on state of Study Session
+         */
+        updateStudySessionButton:function(){
+        	if(this._studySessionButton){
+        		domProp.set(this._studySessionButton, 'innerHTML',
+        				(this.studySessionEnrollmentRequest==null?"Request a Study Session":"Modify Study Session Request"));
+        	}
+        },
+        
+        /**
+         * Request error getting term.
+         */
+        handleEnrollmentError: function(err){
+        	console.error("handleEnrollmentError", err);
+        },
+        
+        /**
+         * Called just once when Moodle links data retrieved
+         * Creates "Other Moodle" pulldown with Moodle courses that have no termCode.
+         */
+        handleMoodle:function(moodleData){
+			var self = this;
+			if (self.otherAccessDrowDown) {
+				// Remove existing dropdown button
+				self.otherAccessDrowDown.destroy();
+				delete self.otherAccessDrowDown;
+			}
+
+    		/*
+    		 * Note: Orphan is my term for Moodle course that does not match an enrolled class
+    		 */
+        	try{
+        		if(moodleData.exception){
+        			throw new Error(moodleData.exception);
+        		}
+        		
+        		var moodleMap = moodleData.map;
+        		var orphans = [];
+
+        		for(var classLabel in moodleMap){
+        			var moodle = moodleMap[classLabel];
+        			if(moodle.termCode==null){
+        				console.debug('Moodle course without termCode', moodle);
+        				orphans.push(moodle);
+        			}
+        		}
+        		
+        		if(orphans.length>0){
+        			// Render Other Moodle
+        			var div = domConstruct.create('div');
+        			// TODO Old production had disabled icon, etc. Review CSS
+        			for(var i=0; i<orphans.length; i++){
+        				var moodle = orphans[i];
+        				polyLearnLink(moodle, div);
+        			}
+        			var label = orphans.length+' other PolyLearn Access';
+        			var dialog = new TooltipDialog({content:div});
+        			domClass.add(dialog.containerNode, "myclasses up-portlet-content-wrapper-inner");
+        			
+        			var elapsed = new Date().getTime() - this._moodleRequestStart;
+        			console.debug('Time from term data to moodle processed', elapsed);
+        			var b = new DropDownButton({label:label, dropDown:dialog});
+        			// Animate if it's been more than 2 secs since rendering term UI
+        			if(elapsed>2000){
+        				domStyle.set(b.domNode, 'opacity' , 0);
+        				// place after changing opacity
+        				b.placeAt(this.headerNode);
+        				baseFx.fadeIn({node:b.domNode}).play();
+        			}
+        			else{
+        				b.placeAt(this.headerNode);
+        			}
+        			self.otherAccessDrowDown = b;
+
+        		}
+        		console.groupEnd();
+        	}
+        	catch(err){
+        		console.error(err);
+        		// Call error handler, which displays user error message
+        		this.handleMoodleError(err);
+        	}
+        },
+        
+        handleMoodleError:function(err){
+        	console.error('handleMoodleError', err);
+        	this.userMessage('error', 'Woops, PolyLearn links did not load.'
+                                +'<p>To access your course(s), please click on the <a href="'+POLYLEARN_HOME_URL+'">PolyLearn Home</a> link or check the <a href="'+POLYLEARN_HOME_MAINTENANCE_URL+'">scheduled outage</a> calendar for more information.');
+        },
+        
+        /**
+         * Sets Moodle URLs in classListWidget.
+         * Adds any Moodle courses for the current term that do not match enrolled courseId
+         * to "Unenrolled PolyLearn courses"
+         * 
+         */
+        mergeMoodle:function(moodleData){
+        	var moodleMap = moodleData.map;
+        	var node = this.unenrolledMoodleNode;
+        	var cw = this._classListWidget;
+        	var hasUnenrolled = false;
+        	/*
+        	 * Could be a bit more efficient by pre-sorting termCodes,
+        	 * but looping all moodle courses each time termCode changes shouldn't be an issue.
+        	 */
+        	
+        	// termCode for currently displayed term
+        	var termCode = this._enrollmentData.term.termCode;
+        	for(var classLabel in moodleMap){
+        		try{
+        			var moodle = moodleMap[classLabel];
+        			if(moodle.termCode != termCode){
+        				continue;
+        			}
+        			/*
+        			 * cw is undefined if not enrolled in any classes.
+        			 * (Widget not created in this case)
+        			 * Still need this loop to ignore moodle courses for other terms. (code above)
+        			 */
+        			var cv = cw?cw.getClassView(moodle.courseId):null;
+
+					if (!cv) {
+						/* Hacky fix for CHAN-774
+						 * Moodle's courseId will not contain course number prefixes that exist in enrollment data.
+						 * The course number prefix 'P' differentiates the course for enrollment reporting, but it is
+						 * in fact the same course.
+						 *
+						 * courseId example: "GER-101-04-2168"
+						 */
+
+						// attempt to get PolyLearn link with course prefix
+						var courseIdWithPrefix = moodle.courseId.replace("-", "-P");
+						cv = cw?cw.getClassView(courseIdWithPrefix):null;
+						}
+
+					if(cv){
+						cv.set('moodle', moodle);
+					} else {
+						polyLearnLink(moodle, node);
+						hasUnenrolled = true;
+					}
+        		}
+        		catch(err){
+        			console.error('Exception on classLabel', classLabel);
+        			console.error(err);
+        		}
+			}
+        	
+        	if(hasUnenrolled){
+        		domConstruct.create('div', {"class":"portlet-msg-alert", innerHTML:"You are NOT officially enrolled in these classes"}, node, 'first');
+        		domConstruct.create('h3', {innerHTML:"PolyLearn Access"}, node, 'first');
+        	}
+        },
+        
+        /**
+         * The Study Session topics that match this term's classes have match any Study Session topics.
+         * @param store Store of the term's classes.
+         */
+        getStudySessionClasses:function(store){
+        	var self = this;
+        	var topics = [];
+        	var keys = {}; // map to avoid duplicate keys from LEC & LAB
+        	store.query(self.enrolledFilter).forEach(function(o){
+        		keys[o.subjectCode+o.courseCatalogNumber]=1;
+        	});
+        	for(var k in keys){
+        		var t = self.studySessionTopics[k];
+        		if(t){
+        			topics.push(t);	
+        		}
+        	}
+        	return topics;
+        },
+        
+        /**
+         * When View Past Term clicked.
+         */
+        onViewTerm:function(){
+        	var self = this;
+        	if(this._pastTermsWidget){
+        		this._pastTermsWidget.show();
+        		// If open once, than shrink window and open again, contents are screwy, this fixes it.
+        		this._pastTermsWidget.resize();
+        		return;
+        	}
+        	var w = new PastTerms({portlet:self, "class": "pastQuarterDialog",
+        		onTermSelect:function(termCode){
+        			w.hide();
+        			self.set('termCode', termCode);
+        		}});
+        	// show will startup()
+        	w.show();
+        	this._pastTermsWidget = w;
+        },
+        
+        onPortalColumnsResized:function(){
+        	if(this.termContainer){
+        		this.termContainer.resize();
+        	}
+        },
+        
+        /**
+         * Called after termContainer resize
+         * (aspect.after)
+         */
+        onContainerResize:function(r){
+        	var box = this.termContainer._contentBox;
+        	console.debug('onContainerResize', box);
+        	this.autoContainerView(box.w);
+        	return r;
+        },
+        
+        /**
+         * Automatically select an appropriate containerView for the given width.
+         * @param width
+         */
+        autoContainerView:function(width){
+        	var view = width < this.transitionWidth ? 'tabs':'bc';
+        	console.debug('Auto-selected containerView', view);
+        	this.set('containerView', view);
+        },
+
+        /**
+         * Get Study Session schedules promise, returns same promise if called multiple times
+         * so that request is only made once.
+         */
+        getStudySessionSchedules:function(){
+        	if(this._ssSchedulesPromise){
+        		return this._ssSchedulesPromise;
+        	}
+        	this._ssSchedulesPromise = this.request(this.createResourceURL(null, "getStudySessionSchedulesTable"), {handleAs:"json"});
+        	return this._ssSchedulesPromise;
+        },
+        
+        /*
+         * Filters that are referenced by MyClassesCalendar and ClassListView
+         * enrollmentStatus can be null! (So exceptions are caught; return false)
+         */
+        /**
+         * Returns teaching or enrolled for now.
+         * Do we ever have a user who is enrolled and teaches?
+         * @param item
+         * @param index
+         * @param array
+         * @returns {Boolean}
+         */
+        enrolledFilter: function(item, index, array){
+        	try{
+        		return item.enrollmentStatus.statusCode=="E";
+        	}
+        	catch(err){
+        		return false;
+        	}
+    	},
+    	
+    	waitlistedFilter: function(item, index, array){
+    		try{
+    			return item.enrollmentStatus.statusCode=="W";
+    		}
+    		catch(err){
+    			return false;
+    		}
+    	},
+    	
+    	droppedFilter: function(item, index, array){
+    		try{
+    			return item.enrollmentStatus.statusCode=="D";
+    		}
+    		catch(err){
+    			return false;
+    		}
+    	},
+    	
+    	instructorFilter: function(item, index, array){
+    		try{
+    			return item.role=='instructor';
+    		}
+    		catch(err){
+    			console.error(err);
+    			return false;
+    		}
+    	}
+    	
+    });
+    return Portlet;
+});

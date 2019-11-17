@@ -1,0 +1,177 @@
+define([ "dojo/_base/declare", "dijit/_WidgetBase", "dojo/dom",
+		"dojo/dom-construct", "dojo/dom-style", "dojo/_base/lang", "dojo/on",
+		"dojo/dom-geometry", "dojo/fx",
+		"dojo/string",
+
+		"dijit/TitlePane",
+		"./ClassView"],
+
+function(declare, _WidgetBase, dom,
+		domConstruct, domStyle, lang, on,
+		domGeom, fx,
+		string,
+
+		TitlePane,
+		ClassView) {
+	
+	/**
+	 * When tp resizes, call the given function, which
+	 * updates portlet.containerHeight.
+	 */
+	function onTitlePaneResize(tp, func){
+		/*
+		 * Re-create animations so that they call onResize (Code from TitlePane.js)
+		 * Note: Must call fx method and create new animations 
+		 * rather than just modify existing animation object.
+		 */
+		var hideNode = tp.hideNode, wipeNode = tp.wipeNode;
+		tp._wipeIn = fx.wipeIn({
+			node: wipeNode,
+			duration: tp.duration,
+			beforeBegin: function(){
+				hideNode.style.display = "";
+			},
+			onEnd:func
+		});
+		tp._wipeOut = fx.wipeOut({
+			node: wipeNode,
+			duration: tp.duration,
+			onEnd: function(){
+				hideNode.style.display = "none";
+				func();
+			}
+		});
+	}
+	
+	// Options for all of the store queries to use. For now, just sort by classLabel
+	// TODO Group certain classes together by category?
+	var QUERY_OPTS={sort:[{attribute:"classLabel", descending: false}]};
+	
+	var ClassListView = declare([_WidgetBase], {
+		
+		
+		baseClass:"termClasses",
+		
+		/**
+		 * @memberOf ClassListView
+		 */
+		buildRendering:function(){
+			this.inherited(arguments);
+			this._classViewMap = {};
+			var store = this.store;
+			var portlet = this.portlet;
+			var node = domConstruct.create('div', null, this.domNode);
+			/*
+			 * domNode height is set by containers, so need another div that resizes that we can measure.
+			 */
+			this.containerNode = node;
+			
+			// So we don't waste time calling lang.hitch later
+			this._this_onResize = lang.hitch(this, 'onResize');
+			
+			this._childWidgets = [];
+			
+			// can give sort options (2nd arg)
+        	// http://dojotoolkit.org/reference-guide/1.8/dojo/store.html#dojo-store
+			
+			var instructing = store.query(portlet.instructorFilter, QUERY_OPTS);
+			var isInstructor = false;
+			if(instructing.length>0){
+				isInstructor = true;
+        		domConstruct.place(this._createClassGroup(instructing), node);
+        	}
+			
+			var enrolled = store.query(portlet.enrolledFilter, QUERY_OPTS);
+			if(enrolled.length>0){
+				if(isInstructor){
+					// If instructor, differentiate this group.
+					domConstruct.create('h3', {innerHTML:"Enrolled as student"}, node);
+				}
+        		domConstruct.place(this._createClassGroup(enrolled), node);
+        	}
+        	else if(!isInstructor){
+        		// TODO Style
+        		domConstruct.create('p',{innerHTML:"<div class=\"portlet-msg-info\">You are not enrolled in any classes.</div>"}, node);
+        	}
+        	
+        	var waitlisted = store.query(portlet.waitlistedFilter, QUERY_OPTS);
+        	if(waitlisted.length>0){
+        		this._createSection(node, waitlisted, waitlisted.length+" Waitlisted");
+        	}
+        	
+        	var dropped = store.query(portlet.droppedFilter, QUERY_OPTS);
+        	if(dropped.length>0){
+        		this._createSection(node, dropped, dropped.length+" Dropped");
+        	}
+		},
+	
+		/**
+	     * Create a new section of ClassViews
+	     * @returns {DOMNode}
+	     */
+	    _createClassGroup:function(results){
+	    	// TODO height: auto here didn't fix UP-1000
+	    	var div = domConstruct.create('div');
+	    	for ( var i = 0; i < results.length; i++) {
+	    		var data = results[i];
+	    		/*
+	    		 * Debated whether data should be digested here or within ClassView.
+	    		 * Decided to just pass data along to the view as its so specific to the data anyway.
+	    		 */
+	    		var cv = new ClassView({
+	    			data:data,
+	    			open: false
+	    		});
+	    		this._classViewMap[data.classLabel] = cv;
+	    		
+	    		onTitlePaneResize(cv, this._this_onResize);
+	    		cv.placeAt(div);
+	    		this._childWidgets.push(cv);
+			}
+	    	return div;
+	    },
+	    
+	    /**
+	     * Create a group of classes within a TitlePane
+	     * @param containerNode Added to this node
+	     * @param results
+	     * @param title
+	     */
+	    _createSection:function(containerNode, results, title){
+	    	var self = this;
+	    	var tp = new TitlePane({"class":"classSection", title:title, open:false,
+	    		content:self._createClassGroup(results)
+	    	});
+	    	onTitlePaneResize(tp, self._this_onResize);
+	    	tp.placeAt(containerNode);
+	    	this._childWidgets.push(tp);
+	    	return tp;
+	    },
+	    
+	    startup:function(){
+	    	for ( var i = 0; i < this._childWidgets.length; i++) {
+				this._childWidgets[i].startup();
+			}
+	    	this.inherited(arguments);
+	    },
+	    
+	    getClassView:function(classLabel){
+	    	return this._classViewMap[classLabel];
+	    },
+	    
+	    /**
+	     * Called when any of the child widgets resizes.
+	     * (At the end of their animation)
+	     */
+	    onResize:function(){
+	    	console.debug('onResize');
+	    	/*
+	    	 * domNode height is set by BorderContainer, so we measure the containerNode we created
+	    	 */
+	    	var box = domGeom.getContentBox(this.containerNode);
+	    	this.portlet.set('containerHeight', box.h);
+	    }
+	    
+	});
+	return ClassListView;
+});

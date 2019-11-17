@@ -1,0 +1,226 @@
+define(["dojo/_base/declare", "calpoly/_PortletMixin",
+        "dojo/dom", "dojo/dom-construct", "dojo/_base/lang", "dojo/on", "dojo/topic", "dojo/aspect", "dojo/query", "dojo/dom-geometry", "dojo/dom-class",
+        "dojo/date","dojo/date/locale",
+        "dojo/store/Memory", "dojo/store/Observable",
+        
+        "dijit/form/Button",
+        
+        "dojox/calendar/Calendar","dojox/calendar/CalendarBase","dojox/calendar/SimpleColumnView",
+        "dojox/calendar/Keyboard","dojox/calendar/Mouse","dojox/calendar/VerticalRenderer",
+        "dojo/text!./templates/MyClassesCalendar.html"],
+         
+        /*
+         * Ideas:
+         * Calendar Today on right, expand to slide down list.
+         * Calendar in tab or dialog?
+         * Books?
+         * 
+         * TODO
+         * Grid borders missing?
+         */
+function(declare, _PortletMixin,
+        dom, domConstruct, lang, on, topic, aspect, query, domGeom, domClass,
+        date,dateLocale,
+        MemoryStore, Observable,
+        
+        Button,
+        
+        Calendar, CalendarBase, CalendarSimpleColumnView,
+        CalendarKeyboard, CalendarMouse,CalendarVerticalRenderer,
+        calendarTemplate){
+	
+	// Sunday zero because start of week in this view
+	var weekDayNumMap = {"U":0, "M":1, "T":2, "W":3, "R":4, "F":5, "S":6};
+	
+	var ColView = declare([CalendarSimpleColumnView, CalendarKeyboard, CalendarMouse], {
+		verticalRenderer: CalendarVerticalRenderer,
+		/*
+		 * hourSize can't be less than 38!? It needs to be larger to show start time anyway. So not a big deal.
+		 * Otherwise scroll container isn't calculated right. Dojo Bug?
+		 * TODO Report to Dojo
+		 * 
+		 * FIXME Start-time not showing for 1hr classes
+		 */
+		hourSize:64,
+		timeSlotDuration: 30,
+		// Date hidden for now since selected day doesn't change when viewing past terms and this is confusing. MMM d
+		columnHeaderDatePattern:"EEE",
+		rowHeaderTimePattern:"h a",
+		
+		/**
+		 * Add .wideEvent CSS class if event widths > 135
+		 * (This changes Location positioning)
+		 */
+		resize:function(){
+			console.debug('ColView.resize', arguments);
+			query(".dojoxCalendarContainerColumn", this.itemContainerTable).forEach(function(node){
+				var box = domGeom.getMarginBox(node);
+				domClass.toggle(node, 'wideEvent', box.w>135);
+			});
+		},
+
+		onRenderersLayoutDone:function(){
+			this.inherited(arguments);
+			this.resize();
+		}
+	});	
+
+	var MyClassesCalendar = declare([CalendarBase],{
+
+		templateString: calendarTemplate,
+		editable: false,
+		moveEnabled: false,
+		resizeEnabled: false,
+		
+		// Default dateInterval is week view
+		
+		// These will be set to false if schedule has meetings on that day.
+		noSunday:true,
+		noSaturday:true,
+		
+		/*
+		 * Min/Max hours to pass along to columnView
+		 */
+		minHours:8,
+		maxHours:17,
+		
+		/**
+		 * Called from CalendarBase.buildRendering()
+		 * @memberOf MyClassesCalendar
+		 * @returns {Array}
+		 */
+		_createDefaultViews:function(){
+			var self = this;
+			var colView = new ColView({
+				minHours:self.minHours,
+				maxHours:self.maxHours
+			});
+			// Hook sheetHeight changes to portlet.setContainerHeight
+			aspect.after(colView, '_createRenderData', function(rd){
+				// BorderContainer should always be at least tall enough for the Calendar
+	    		self.portlet.set('minHeight', rd.sheetHeight+64);
+	    		return rd;
+	    	});
+			this.columnView = colView;
+			
+			// Connect header clicks
+			colView.on("columnHeaderClick", lang.hitch(this, this.columnViewColumnHeaderClick));
+			return [colView];
+		},
+
+		/*
+		 * Disabled matrixView because no reason for month view without
+		 * holidays & finals
+		 */
+		_computeCurrentView: function(startDate, endDate, duration){
+			return this.columnView;
+		},
+		
+		/**
+		 * Create events store and calculate
+		 * minHours, maxHours
+		 */
+		postMixInProperties:function(){
+			this.inherited(arguments);
+
+			this.startOfWeek = this.floorToWeek(new Date()); // Start with Sunday
+			this._nextEventId = 1;
+		},
+		
+		/**
+		 * Add some weekly repeating events to this calendar's store.
+		 * Note: Currently just populates one week out since just one week is displayed.
+		 * @param The store to add events to, so that the caller can set the store once all events are added for performance.
+		 * @param list Example: [{startTime:Date, endTime:Date, days:"MW", summary:"Title"}]
+		 * date component of times is ignored and new Dates are created relative to this.startOfWeek
+		 * 
+		 */
+		addWeeklyEvents:function(store, list){
+			var d = this.startOfWeek; // Sunday
+//			var trans = store.transaction(); Store does not support
+			var start, end, days, wdInt;
+			var idAtStart = this._nextEventId;
+			for ( var i = 0; i < list.length; i++) {
+				var event = list[i];
+				start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 
+						event.startTime.getHours(), event.startTime.getMinutes(), 0, 0);
+				end = new Date(d.getFullYear(), d.getMonth(), d.getDate(),
+						event.endTime.getHours(), event.endTime.getMinutes(), 0, 0);
+				
+				days = event.days;
+				for ( var j = 0; j < days.length; j++) {
+					// For each day of this event, adjust the start/end times to that day and put event object.
+					wdInt = weekDayNumMap[days[j]];
+					var x = lang.clone(event);
+					x.id = this._nextEventId;
+					this._nextEventId ++;
+//					x.day = days[j]; Not needed
+					delete x.days;
+					x.startTime=date.add(start, "day", wdInt);
+					x.endTime=date.add(end, "day", wdInt);
+					store.add(x);
+//					console.debug('Put calendar event', x, event);
+				}
+			}
+		},
+		
+		/**
+		 * Return event CSS class based on store item
+		 * @param item
+		 */
+		cssClassFunc:function(item){
+			return item.componentCode;
+		},
+		
+		/**
+		 * Modified so that week dateInterval hides Sunday/Saturday if noSunday/noSaturday set.
+		 * @returns {Array}
+		 */
+		computeTimeInterval: function(){
+			// summary:
+			//		Computes the displayed time interval according to the date, dateInterval and 
+			//		dateIntervalSteps if date is not null or startDate and endDate properties otherwise.
+			// tags:
+			//		protected
+					
+			var cal = this.dateModule;
+			var d = this.get("date");
+			
+			if(d == null){
+				return [ this.floorToDay(this.get("startDate")), cal.add(this.get("endDate"), "day", 1) ];
+			}else{
+				
+				var s = this.floorToDay(d);
+				var di = this.get("dateInterval");
+				var dis = this.get("dateIntervalSteps");
+				var e;
+				
+				switch(di){
+					case "day":						
+						e = cal.add(s, "day", dis);
+						break;
+					case "week":
+						dis = 7;
+						s = this.floorToWeek(s);
+						if(this.noSunday){
+							s = cal.add(s, "day", 1); // Move to Monday
+							dis-=1;
+						}
+						if(this.noSaturday){
+							dis-=1;
+						}
+						// If has Sunday/Saturday
+						e = cal.add(s, "day", dis);
+						break;
+					case "month":
+						s.setDate(1);
+						e = cal.add(s, "month", dis);						
+						break;
+				}				
+				return [s, e];
+			}			
+		}
+	});
+	return MyClassesCalendar;
+});
+

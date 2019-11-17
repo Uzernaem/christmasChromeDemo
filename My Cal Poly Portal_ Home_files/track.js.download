@@ -1,0 +1,36 @@
+window.cp = window.cp || {};
+cp.portlets = cp.portlets || {}
+cp.portlets.singleclick = cp.portlets.singleclick || {}
+cp.portlets.singleclick.track = cp.portlets.singleclick.track || (function($,_) {
+
+   var clickLinkAction = 'clicked_singleclick_link';
+
+   var linkSelector = [
+      //desktop sidebar
+      '#singleclick-sidelinks a.singleclick-link',
+      //desktop portlet
+      '.up-portlet-wrapper.SingleClick a.single-click-clickable',
+      //mobile portlet
+      '#page.SingleClick a.single-click-clickable'
+   ].join(', ');
+
+   return {
+      init: _.once(function() {
+         $(function() {
+            // Adding Single Click Link tracking
+            var links = document.querySelectorAll(linkSelector);
+            for (var i = 0; i < links.length; i++) {
+               links[i].addEventListener('click', function(event){
+                  var singleClickName = event.target.innerText;
+                  if (typeof newrelic == 'object') {
+                     newrelic.addPageAction(clickLinkAction, {title: singleClickName, themeType: (cp.isMobile ? 'mobile' : 'desktop')});
+                  }
+               });
+            }
+         });
+      })
+   };
+})(up.jQuery, up._);
+
+
+

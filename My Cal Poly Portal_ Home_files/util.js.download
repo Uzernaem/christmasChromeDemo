@@ -1,0 +1,61 @@
+/**
+ * Miscellaneous utilities. Mostly text generation from data objects.
+ */
+define(["dojo/string"],
+function(string) {
+	
+	/**
+	 * Strip the leading 0 off a string
+	 */
+	function stripZero(s){
+		if(s==null){
+			return s;
+		}
+		if(s.charAt(0)=='0'){
+			return s.slice(1);
+		}
+		return s;
+	}
+	
+	return{
+		/**
+		 * Standard course label, SUB NUM-SEC
+		 * @param c
+		 * @returns
+		 */
+		courseLabel:function(c){
+			var text = c.subjectCode+' '+c.courseCatalogNumber;
+			if(c.section){
+				text+='-'+c.section;	
+			}
+			return text;
+		},
+		/**
+		 * Get building/room text.
+		 * @param mp
+		 * @param includeBuilding Include the Building Name
+		 * @returns {String} null if missing info
+		 */
+		meetingLocationText:function(mp, includeBuilding){
+			// descr has building name and room, but not building #
+			var bd = mp.facilityBuildingCode;
+			var room = mp.facilityRoom;
+			if(bd==null||room==null){
+				return null;
+			}
+			
+			var text = stripZero(bd)+'-'+stripZero(room);
+			if(!includeBuilding){
+				return text;
+			}
+
+			var descr = mp.facilityDescription;
+			// If description ends with room #
+			if(room == descr.substring(descr.length-room.length)){
+				// Remove room # off description, should this be done in web API?
+				descr = string.trim(descr.substring(0, descr.length-room.length));
+			}
+			return text+' ('+descr+')';
+		}
+	};
+});

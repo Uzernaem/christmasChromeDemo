@@ -1,0 +1,79 @@
+/**
+ * Call this from the uPortal theme.
+ * Bootstraps the sidepane.
+ */
+/*
+ * TODO Verify accessibility
+ */
+require(["dojo/dom", "dojo/dom-construct", "dojo/_base/lang", "dojo/on", "dojo/dom-style", "dojo/dom-class",
+        "dojo/_base/fx", "dojo/fx",
+        "dojo/request", "dojo/topic",
+        "dojo/domReady!"
+        ],
+
+function(dom, domConstruct, lang, on, domStyle, domClass,
+        baseFx, fx,
+        request, topic
+         ){
+
+	var WEB_RESOURCE_ICON_DIR = cp.webResourceUrl + '/portlet/SingleClickPortlet/icons/';
+
+	// Create container
+	var node = domConstruct.create("div",{
+		id:"singleclick-sidelinks"
+	});
+
+	var header = domConstruct.create("div", {
+		id:"singleclick-header",
+		innerHTML:"<span class = 'singleclick-hideable'>My Apps</span>"
+	}, node);
+
+
+    var openWidth = 200;
+    var sidePadding = 10;
+
+    domStyle.set(node, "width", openWidth + "px");
+    domStyle.set("portalPageBodyColumns", "marginLeft", (openWidth + sidePadding) + "px");
+
+	// Actually place in the DOM now that width and CSS is set. Waiting until now prevents re-layouts as we mess with the DOM.
+    domConstruct.place(node, "portalPageBodyColumns", "before");
+
+	/**
+	 * Process user"s visible personal links.
+	 */
+	function processLinks(links){
+
+		var link, iconUrl;
+		// TODO sort by link.order, probably easiest to just do this Java side.
+		for(var i=0; i<links.length;i++){
+			link = links[i];
+
+			iconUrl = WEB_RESOURCE_ICON_DIR + link.icon;
+
+			domConstruct.create("a",{
+				"class":"singleclick-link",
+				href: link.url,
+				target:"_blank",
+				innerHTML:"<img src='"+iconUrl+"'/><span class = 'singleclick-hideable'>"+link.name+"</span>",
+				title:link.description
+			}, node);
+		}
+
+		domConstruct.create("a", {
+			href: "/p/SingleClick/max?pCm=edit",
+			"class": "singleclick-hideable",
+			id: "edit",
+			innerHTML: "Edit Favorites"
+		},
+		node);
+	}
+
+	// Fire off AJAX request for user"s links.
+	/*
+	 * TODO Ideally we"d pass this configuration in somehow. (URL for links)
+	 */
+	request("/p/SingleClick/exclusive/personal_links.resource.uP",{handleAs:"json"})
+		.then(processLinks)
+		.then(cp.portlets.singleclick.track.init);
+
+});

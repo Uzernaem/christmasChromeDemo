@@ -1,0 +1,4 @@
+/* This is a generated file, see portal-src project for template */ 
+up.jQuery.getScript("https://webresource.its.calpoly.edu/newrelic/1/nr-loader-full-current.min.js", function(){
+    NREUM.info = { applicationID: "22326927",licenseKey: "4e34bbaf17" }
+});

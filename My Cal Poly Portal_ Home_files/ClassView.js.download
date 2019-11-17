@@ -1,0 +1,240 @@
+define([ "dojo/_base/declare", "dijit/_WidgetBase", "dojo/dom",
+		"dojo/dom-construct", "dojo/dom-style", "dojo/_base/lang", "dojo/on",
+		"dojo/keys",
+
+		"dijit/form/Button",
+		"dijit/TitlePane" ,
+		"./util", "dojo/text!./templates/ClassViewTitlePane.html", 
+		"dojo/_base/config", "calpoly/portal-html"],
+
+function(declare, _WidgetBase, dom,
+		domConstruct, domStyle, lang, on,
+		keys,
+
+		Button,
+		TitlePane, 
+		coursesUtil, template,
+		dojoConfig, portalHtml) {
+	
+	// TODO Common area/module for this?
+	var meetingDayFlags = ["mondayFlag","tuesdayFlag","wednesdayFlag","thursdayFlag","fridayFlag","saturdayFlag","sundayFlag"];
+	
+	var dayLetterMap={
+		"mondayFlag":"M","tuesdayFlag":"T","wednesdayFlag":"W","thursdayFlag":"R","fridayFlag":"F","saturdayFlag":"Sa","sundayFlag":"Su"
+	};
+	
+	var PORTAL_ICONS=dojoConfig.portal.iconsPath;
+	var POLYLEARN_ICON = PORTAL_ICONS+'polylearn.png';
+	
+	/**
+	 * View for a Class
+	 * TODO Should the detail view be separate from the
+	 * collapsed?
+	 */
+	var ClassView = declare([ TitlePane ], {
+
+		baseClass: "dijitTitlePane classView",
+		
+		templateString: template,
+		
+		description:"",
+		_setDescriptionAttr: { node: "descrNode", type: "innerHTML" },
+		
+		// Button created if/when this is set
+		moodle:null,
+		
+		_setMoodleAttr:function(moodle){
+			console.debug('_setMoodleAttr', moodle);
+			if(moodle){
+				
+				var css = 'icon-moodle';
+				if(!moodle.active){
+					css+='-disabled';
+				}
+				
+				var args = {"class":"polyLearn"};
+				if(moodle.active===false){
+					args["class"]+=" polyLearnInactive";
+					args.title="PolyLearn inactive";
+				}
+				var b = portalHtml.iconText('button', args, {src:POLYLEARN_ICON,alt:"PolyLearn"}, "PolyLearn", this.buttonsNode);
+				on(b,'click',function(){
+					window.open(moodle.url, '_blank');
+				});
+			}
+			// Otherwise would destroy, but we don't need that functionality.
+			this._set('moodle', moodle);
+		},
+		
+		
+		/**
+		 * Set attributes based on class data
+		 * @memberOf ClassView
+		 */
+		postMixInProperties:function(){
+			// Do not use this.set() in this method, attributes applied next.
+			this.inherited(arguments);
+			var d = this.data;
+			
+			this.description = d.courseCatalogDescription;
+			
+			var title = coursesUtil.courseLabel(d);
+
+			var cc = d.componentCode;
+			// Differentiate Labs visually.
+			// TODO other class types?
+			// Icon instead of text?
+			if(cc=='LAB'){
+				title += ' LAB';
+			}
+			this.title = title;
+
+			
+			var mpTexts = [];
+			var mps = d.meetingPatterns;
+			// Could be multiple, but usually just one
+			// TODO Test multiple meeting patterns
+			// Move meeting pattern text-gen to module?
+			for ( var i = 0; i < mps.length; i++) {
+				var text = this.getShortMeetingPatternText(mps[i]);
+				if(text){
+					mpTexts.push(text);	
+				}
+			}
+			if(mpTexts.length==0){
+				mpTexts.push('Unknown schedule');
+			}
+			this._meetingTexts = mpTexts;
+		},
+		
+		/**
+		 * Additional DOM generation not done by template.
+		 */
+		buildRendering:function(){
+			this.inherited(arguments);
+
+			// Meetings in Pane
+			var mpTexts = this._meetingTexts;
+			for ( var i = 0; i < mpTexts.length; i++) {
+				var mpText = mpTexts[i];
+				domConstruct.create('div', {innerHTML:mpText}, this.meetingsNode);
+			}
+		},
+	
+		/**
+		 * Get short one-line summary text for the single meeting pattern.
+		 * @param mp
+		 * @returns null if invalid meeting data.
+		 */
+		getShortMeetingPatternText:function(mp){
+			var s = [];
+			for ( var i = 0; i < meetingDayFlags.length; i++) {
+				var day = meetingDayFlags[i];
+				if(mp[day]=='Y'){
+					s.push(dayLetterMap[day]);
+				}
+			}
+			
+			var start = mp.startTime;
+			var end = mp.endTime;
+			if(s.length==0 || start==null || end==null){
+				return null;
+			}
+			
+			s.push(' ');
+			s.push(start);
+			s.push(' to ');
+			s.push(end);
+			
+			return s.join("");
+		},
+		
+		/**
+		 * Generate content on first show before animation starts playing.
+		 * @param open
+		 * @param animate
+		 */
+		_setOpenAttr: function(/*Boolean*/ open, /*Boolean*/ animate){
+			if(!this._wasShown){
+				console.debug('First time showing, generating content', this);
+				var d = this.data;
+				var node = domConstruct.create('div', {"class":"classInfoContent"});
+				
+				// Instructor block
+				var instr = d.instructor;
+				if(instr){
+				var instrNode = domConstruct.create('div',{"class":"instructorContainer"},node);
+				var text = instr.name;
+				if(text){
+					portalHtml.iconText('div', {title:"Professor's name"}, {src:PORTAL_ICONS+'professor.png', alt:"Professor"}, text, instrNode);	
+				}
+
+				text = instr.email;
+				if(text){
+					portalHtml.iconText('a', {title:"Email", href:"mailto:"+text},
+							{src:PORTAL_ICONS+"email.png", alt:"Email"}, text, instrNode);
+				}
+				text = instr.phone;
+				if(text){
+					portalHtml.iconText('div', {title:"Office Phone"}, {src:PORTAL_ICONS+'phone.png', alt:"Phone"}, text, instrNode);	
+				}
+				text=instr.officeLocation;
+				if(text && text!='-'){
+					// TODO Office icon
+					portalHtml.iconText('div', {title:"Office Location"}, {src:PORTAL_ICONS+'professor.png', alt:"Office"}, text, instrNode);	
+				}
+				}
+				
+				domConstruct.create('div', {innerHTML:coursesUtil.courseLabel(d) + ' '+d.componentDescription,
+					"class":"classTitle"}, node);
+				
+				var meets = d.meetingPatterns;
+				for ( var i = 0; i < meets.length; i++) {
+					var mp = meets[i];
+					text = coursesUtil.meetingLocationText(mp, true);
+					// Bother duplicating times?
+//					+' '+this.getShortMeetingPatternText(mp);
+					if(text){
+						// May be null if an odd class with no room
+						domConstruct.create('div',{innerHTML:text}, node);	
+					}
+				}
+				
+				// Only enrolled has this
+				if(d.gradeInformation){
+					var ua = d.gradeInformation.unitsAttempted;
+					if(ua){
+						domConstruct.create('div',{innerHTML:"Units: "+ua}, node);		
+					}
+				}
+				
+				this.set('content', node);
+			}
+			this.inherited(arguments);
+		},
+		
+		/**
+		 * Allow Enter/Space only if e.target not within buttonsNode
+		 * @param e
+		 */
+		_onTitleKey: function(/*Event*/ e){
+			if( (e.keyCode == keys.ENTER || e.keyCode == keys.SPACE)
+					&& dom.isDescendant(e.target,this.buttonsNode)){
+				return;
+			}
+			this.inherited(arguments);
+		},
+		
+		/**
+		 * Don't toggle pane if click is within buttonsNode
+		 * @param e
+		 */
+		_onTitleClick: function(e){
+			if(!dom.isDescendant(e.target,this.buttonsNode)){
+				this.inherited(arguments);
+			}
+		}
+
+	});
+	return ClassView;
+});

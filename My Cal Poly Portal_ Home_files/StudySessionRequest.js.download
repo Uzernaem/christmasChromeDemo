@@ -1,0 +1,414 @@
+define([ "dojo/_base/declare", "dijit/_WidgetBase", "dijit/_TemplatedMixin", "dijit/_WidgetsInTemplateMixin",
+        "dojo/dom", "dojo/dom-construct", "dojo/dom-style", "dojo/dom-prop", "dojo/dom-class", "dojo/_base/lang", "dojo/on", "dojo/_base/array",
+        "dojo/date", "dojo/date/locale",
+
+		"dojo/text!./templates/StudySessionRequest.html",
+		"dojo/store/Memory",
+		// Required by template
+		"dijit/registry", "dijit/form/Form", "dijit/form/Textarea", "dijit/form/ValidationTextBox",
+		"dijit/form/CheckBox", "dijit/Dialog", "dijit/form/Button",
+		"dojo/_base/config", "calpoly/portal-html"],
+
+function(declare, _WidgetBase, _TemplatedMixin, _WidgetsInTemplateMixin,
+		dom, domConstruct, domStyle, domProp, domClass, lang, on, array,
+		date, dateLocale,
+
+		template,
+		Memory,
+		registry, Form, Textarea, ValidationTextBox,
+		CheckBox, Dialog, Button,
+		dojoConfig, portalHtml) {
+
+	var dayMap = {
+		"M":"Mon",
+		"T":"Tue",
+		"W":"Wed",
+		"R":"Thu",
+		"F":"Fri",
+		"S":"Sat",
+		"U":"Sun"
+	};
+	
+	/**
+	 * Long form.
+	 * MW > Mon/Wed
+	 */
+	function charDaysToLong(dayStr){
+		var a = [];
+		for(var i=0;i<dayStr.length; i++){
+			a.push(dayMap[dayStr[i]]);
+		}
+		return a.join('/');
+	}
+	
+	function toggleContainedCheck(evt){
+		// Only if click is on TD intsead of checkbox
+		if(evt.target.tagName=='TD'){
+			var c = registry.byNode(evt.target.firstChild);
+			c.set('checked', !c.get('checked'));
+		}
+	}
+	
+	var CLASS_TIME_FORMAT = {locale: "en-us",formatLength: "short",selector: "time"};
+
+	var welcomeDialog = null;
+	
+	declare('calpoly/form/FormattingPhoneNumber', [ValidationTextBox], {
+		
+		regExp:"\\d{3}-\\d{3}-\\d{4}",
+		invalidMessage:"Please enter a 10-digit phone number",
+		
+		filter:function(val){
+			val = lang.trim(val);
+			var s = [];
+			for(var i=0; i<val.length;i++){
+				if(!isNaN(val[i])){
+					s.push(val[i]);
+				}
+			}
+			if(s.length!=10){
+				// Not a 10-digit phone number, return what the user typed, regex will invalidate.
+				return val;
+			}
+			s.splice(3,0,'-');
+			s.splice(7,0,'-');
+			return s.join('');
+		}
+	});
+	
+	var StudySessionRequest = declare([_WidgetBase, _TemplatedMixin, _WidgetsInTemplateMixin], {
+		
+		// MyClasses portlet that owns this Dialog
+		portlet:null,
+		
+		topics:null,
+		existingRequest:null,
+		
+		templateString: template,
+		baseClass:"studySessionRequest",
+		
+		/**
+		 * @memberOf StudySessionRequest
+		 */
+		postCreate:function(){
+			this.inherited(arguments);
+		},
+		
+		/**
+		 * Called once, the first-time shown.
+		 */
+		startup:function(){
+			console.debug('StudySessionRequest.startup (topic checks)');
+			this.inherited(arguments);
+			
+			var portlet = this.portlet;
+			var existingRequest = this.existingRequest;
+			var checkedTopics = null;
+
+			if(!existingRequest){
+				// The schedule request will populate the phone. Need to disable before sending request because enabled on success
+				this.cellPhoneInput.set('disabled', true);
+			}
+			
+			// Generate schedule table
+			portlet.getStudySessionSchedules().then(lang.hitch(this, '_createScheduleTable'));
+			
+			if(existingRequest){
+				this.cellPhoneInput.set('value', existingRequest.cellPhone);
+				this.commentsInput.set('value', existingRequest.comment);
+				
+				// Welcome
+				var b = domConstruct.create('button', {type:"button", innerHTML:"View Welcome Information", style:"margin: 3px;"}, this.contentAreaNode, 'first');
+				on(b, 'click', lang.hitch(this, 'showWelcome'));
+				
+				// Modify button
+				domProp.set(this.submitButtonNode, 'innerHTML', 'Modify Request');
+				
+				// Add cancel button
+				// TODO danger CSS, looked ugly when I tried it. Revisit when portlet style guide is done.
+				b = domConstruct.create('button', {type:"button", innerHTML:"Cancel Request", "class":"danger"}, this.actionBarNode, 'first');
+				on(b, 'click', lang.hitch(this, 'onCancelRequest'));
+				
+				var d = new Date(existingRequest.requestDate);
+				var s = 'Requested '+dateLocale.format(d, {datePattern: "MMM d"});
+				if(existingRequest.updatedDate){
+					s = 'First '+s;
+					var d = new Date(existingRequest.updatedDate);
+					s+="; last updated "+dateLocale.format(d, {datePattern: "MMM d"});
+				}
+				domConstruct.create('div', {innerHTML:s}, this.contentAreaNode, 'first');
+				
+				checkedTopics = existingRequest.topicIds;
+			}
+
+			var topics = this.topics;
+			var node = this.topicsNode;
+			for(var i=0; i<topics.length; i++){
+				var t = topics[i];
+				var label = domConstruct.create('label', {style:"display:block;", innerHTML:t.title,}, node);
+				
+				var checked = false;
+				if(checkedTopics){
+					checked = array.some(checkedTopics, function(id){;
+					return id==t.id;
+					});
+				}
+				new CheckBox({name:"t", value:t.id, checked:checked}).placeAt(label, 'first');
+				// first puts input before label innerHTML text
+			}
+		},
+		
+		_createScheduleTable:function(data){
+			console.debug('schedule data', data);
+			try{
+				if(this.loadingNode){
+					domConstruct.destroy(this.loadingNode);
+					delete this.loadingNode;
+				}
+				
+				var phone = data.defaultCellPhone;
+				/*
+				 * If there is an existingRequest, the phone number will already be set.
+				 * This way, the newest phone number is displayed if the user just change
+				 * the phone within this page load.
+				 */
+				if(this.existingRequest==null && phone){
+					this.cellPhoneInput.set('value', phone);
+				}
+				console.debug('enabling cellPhoneInput', this.cellPhoneInput);
+				this.cellPhoneInput.set('disabled', false);
+				
+				var scheduleTable = data.scheduleTable;
+				var table = domConstruct.create('table');
+				var days = scheduleTable.days;
+				var header = days;
+				var tr = domConstruct.create('tr', null, table);
+				domConstruct.create('th', {innerHTML:"Time"}, tr);
+				for ( var i = 0; i < header.length; i++) {
+					domConstruct.create('th', {innerHTML:charDaysToLong(header[i])}, tr);
+				}
+				
+				var req = this.existingRequest;
+				var checkedDefault = req==null;
+				
+				var checkMap = {};
+				
+				var weeklyEvents = [];
+				var timeRows = scheduleTable.timeRows;
+				var sId, sIds, td; // current schedule, td node
+				for ( var i = 1; i < timeRows.length; i++) {
+					var row = timeRows[i];
+					var props = null;
+					if(i%2==0){
+						props={"class":"odd"};
+					}
+					tr = domConstruct.create('tr', props, table);
+					// Time
+					domConstruct.create('td', {innerHTML:row.startTime+'-'+row.endTime, "class":"time"}, tr);
+					var eventTimes={startTime:dateLocale.parse(row.startTime, CLASS_TIME_FORMAT),
+							endTime:dateLocale.parse(row.endTime, CLASS_TIME_FORMAT)};
+					
+					sIds = row.scheduleIds;
+					for ( var j = 0; j < sIds.length; j++) {
+						sId = sIds[j];
+						// CSS class removed later if there is a conflict
+						td = domConstruct.create('td', {"class":"noSchedConflict"}, tr);
+						on(td, 'click', toggleContainedCheck);
+						if(sId!=null){
+							checkMap[sId] = new CheckBox({name:"s", value:sId, checked:checkedDefault}).placeAt(td);
+							
+							// Add events for adding to store
+							weeklyEvents.push(lang.mixin({schId:sId, summary:sId,days:days[j]}, eventTimes));
+						}
+					}
+				}
+				
+				console.debug('SS weeklyEvents', weeklyEvents);
+				
+				if(req){
+					// Check schedules selected in existing request
+					var checkedSchedules = req.scheduleIds;
+					for ( var i = 0; i < checkedSchedules.length; i++) {
+						var s = checkedSchedules[i];
+						checkMap[s].set('checked', true);
+					}
+				}
+				
+				var cal = this.portlet._calendarWidget;
+				// Don't want to display in this Calendar and events are duplicated visually for some reason
+				// Danger in doing this? Should be ok since we don't modify these events
+				var store = new Memory({data:lang.clone(cal.get('store').data)});
+				cal.addWeeklyEvents(store, weeklyEvents);
+				
+				// Determine conflicting schedules
+				var conf = [];
+				var confIds = {};
+				store.query(null, {sort:[{attribute:"startTime"}]}).forEach(function(item){
+					var i = 0;
+					while(i<conf.length){
+						if(date.compare(conf[i].endTime, item.startTime) < 0) {
+							// Remove this and don't increment i
+							conf.splice(i, 1);
+						}
+						else{
+							// Overlapping events, increment i
+							i++;
+						}
+					}
+					
+					conf.push(item);
+					
+					// If list has multiple events, they are conflicting
+					if(conf.length>1){
+						console.debug('CONFLICTING', conf);
+						for ( var j = 0; j < conf.length; j++) {
+							var x = conf[j];
+							if(x.schId){
+								confIds[x.schId] = true;
+							}
+						}
+					}
+				});
+				
+				var someConflict = false;
+				for(var schId in confIds){
+					someConflict = true;
+					var check = checkMap[schId];
+					domClass.remove(check.domNode.parentNode, 'noSchedConflict');
+					
+					// For new requests uncheck conflicted
+					if(req==null){
+						check.set('checked', false);
+					}
+				}
+				
+				if(someConflict){
+					var msg = "Study Sessions that do not conflict with your schedule are <strong>green</strong>.";
+					if(!req){
+						msg = '<div>Conflicts with your schedule have been unchecked.</div>'+msg;
+					}
+					domConstruct.create('div', {"class":"portlet-msg-info", 
+						innerHTML:msg}, this.schedulesNode);
+				}
+
+				// Place at end so HTML doesn't jump around as we construct
+				domConstruct.place(table, this.schedulesNode);
+				// Re-center dialog after content changes
+				this.getParent().resize();
+			}
+			catch(ex){
+				console.error(ex);
+				alert('Error generating schedule, report to servicedesk@calpoly.edu\n'+ex);
+			}
+		},
+		
+		_onSubmitClick:function(){
+			this.submit();
+		},
+		
+		submit:function(){
+    		var portlet = this.portlet;
+    		var form = this.form;
+    		
+    		if(form.validate()===true){
+	    		var value = form.get('value');
+	    		console.debug('Form.value', value);
+	    		var t = value.t;
+	    		var s = value.s;
+
+	    		if(t.length==0){
+	    			alert('Select at least one class');
+	    			return;
+	    		}
+	    		
+	    		if(s.length < 4){
+	    			alert('Select at least four schedules');
+	    			return;
+	    		}
+	    		
+//	    		portlet.clearUserMessages(); TODO Still migrating this code
+	    		
+	    		var url = portlet.createResourceURL(null, 'submitEnrollmentRequest');
+	    		var req = portlet.request(url, {method:"POST", data:value, handleAs:"json"});
+	    		// FIXME Disable button while here, block?
+	    		req.then(lang.hitch(this, 'onSubmitSuccess', req), lang.hitch(this, 'onSubmitError'));
+	    		
+	    		this.setWorkingMessage('Submitting request...');
+    		}
+		},
+		
+		onSubmitSuccess:function(req, enrlRequest){
+			try{
+			console.debug('onSubmitSuccess', arguments);
+			var portlet = this.portlet;
+			portlet.studySessionEnrollmentRequest = enrlRequest;
+			portlet.resetStudySession();
+			
+			this.showWelcome();
+			portlet.userMessage('success', 'Submitted Study Session request');
+			
+			// Alternately, change content instead of creating new dialog
+//			d.content.destroyRecursive();
+//			d.set('content', null);
+//			d.set('href', portlet.contextPath+'/StudySessionConfirmation.html');
+//			console.debug('DIALOG', d);
+//			delete portlet._studySessionDialog;
+			}
+			catch(err){
+				console.error(err);
+			}
+		},
+		
+		onSubmitError:function(){
+			this.portlet.resetStudySession();
+			this.portlet.userMessage('error', 'There was an error submitting your Study Session request. Refresh and try again; if this continues email servicedesk@calpoly.edu');
+		},
+		
+		showWelcome:function(){
+			if(welcomeDialog){
+				welcomeDialog.show();
+				return;
+			}
+			var portlet = this.portlet;
+			welcomeDialog = new Dialog({href:portlet.contextPath+"/StudySessionConfirmation.html", title:"Welcome to Study Session!"});
+			welcomeDialog.show();
+		},
+		
+		onClose:function(){
+			
+		},
+		
+		onCancelRequest:function(){
+			var response = confirm('Are you sure you want to cancel your Study Session request?');
+			if(!response){
+				return;
+			}
+			
+			var portlet = this.portlet;
+			this.setWorkingMessage('Canceling request...');
+			// TODO HTTP DELETE instead? Check success
+    		portlet.request(portlet.createResourceURL(null, 'cancelEnrollmentRequest'),
+    				{method:"POST", handleAs:"json"}).then(lang.hitch(this, 'onCancelSuccess'), lang.hitch(this, 'onCancelError'));
+		},
+		
+		onCancelSuccess:function(){
+			var portlet = this.portlet;
+			portlet.studySessionEnrollmentRequest = null;
+			portlet.resetStudySession();
+			portlet.userMessage('success', 'Cancelled Study Session request');
+		},
+		
+		onCancelError:function(){
+			this.portlet.resetStudySession();
+			this.portlet.userMessage('error', 'There was an error canceling your Study Session request. Refresh and try again; if this continues email servicedesk@calpoly.edu');
+		},
+		
+		setWorkingMessage:function(msg){
+    		domConstruct.empty(this.actionBarNode);
+    		domConstruct.create('div', {innerHTML:'<span class="dijitContentPaneLoading"><span class="dijitInline dijitIconLoading"></span>'+msg+'</span>'},
+    				this.actionBarNode);
+		}
+		
+	});
+	return StudySessionRequest;
+});
